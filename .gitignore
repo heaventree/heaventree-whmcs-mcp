@@ -1,0 +1,8 @@
+/dist/
+/vendor/
+/node_modules/
+/.env*
+*.log
+*.sqlite*
+/test-output/
+/.private/

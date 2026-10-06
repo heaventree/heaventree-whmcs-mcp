@@ -1,0 +1,55 @@
+<?php
+declare(strict_types=1);
+require __DIR__.'/whmcs-init.php';
+require __DIR__.'/../modules/addons/heaventree_mcp/lib/Server.php';
+require __DIR__.'/../modules/addons/heaventree_mcp/lib/Reports.php';
+require __DIR__.'/../modules/addons/heaventree_mcp/lib/Store.php';
+use Heaventree\WhmcsMcp\{Server,Reports,Store,McpException};
+use WHMCS\Database\Capsule;
+$checks=0;
+function check(bool $ok,string $name):void{global $checks;if(!$ok)throw new RuntimeException('FAIL: '.$name);$checks++;}
+function rejected(callable $fn,string $name):void{try{$fn();}catch(McpException $e){check(true,$name);return;}throw new RuntimeException('FAIL: '.$name);}
+$catalog=json_decode(file_get_contents(__DIR__.'/../modules/addons/heaventree_mcp/catalog.json'),true,512,JSON_THROW_ON_ERROR);
+$calls=[];
+$api=function($action,$args)use(&$calls){$calls[]=$action;return ['result'=>'success','action'=>$action,'password'=>'synthetic-private','nested'=>['api_key'=>'synthetic-private']];};
+$server=new Server($catalog,$api,fn($name,$args)=>['fixture'=>$name],[Store::class,'approval'],true);
+$readonly=['id'=>str_repeat('a',32),'scopes'=>['read'],'tools'=>[]];$writer=$readonly;$writer['scopes'][]='write';
+$request=fn($method,$params=[])=>['jsonrpc'=>'2.0','id'=>7,'method'=>$method,'params'=>$params];
+$init=$server->handle($request('initialize',['protocolVersion'=>'2025-06-18']),$readonly);
+check($init['result']['protocolVersion']==='2025-06-18','protocol negotiation');
+check($server->handle(['jsonrpc'=>'2.0','method'=>'notifications/initialized'],$readonly)===null,'notification no body');
+check($server->handle($request('nope'),$readonly)['error']['code']===-32601,'unknown method');
+check($server->handle(['jsonrpc'=>'1.0','id'=>1,'method'=>'ping'],$readonly)['error']['code']===-32600,'invalid version');
+$names=[];$cursor='0';do{$list=$server->handle($request('tools/list',['cursor'=>$cursor]),$readonly);$names=array_merge($names,array_column($list['result']['tools'],'name'));$cursor=$list['result']['nextCursor']??null;}while($cursor!==null);
+check(count($names)===69,'read catalog including ten reports');check(count(array_unique($names))===count($names),'unique catalog');
+check(!in_array('whmcs_domain_renew',$names,true),'write hidden from read token');
+check($server->handle($request('tools/call',['name'=>'whmcs_domain_renew','arguments'=>['domainid'=>1]]),$readonly)['result']['isError'],'read token cannot mutate');
+check(!$calls,'read denial did not reach API');
+$result=$server->handle($request('tools/call',['name'=>'whmcs_get_clients','arguments'=>['limitnum'=>2]]),$readonly);
+check($server->handle($request('tools/call',['name'=>'whmcs_get_configuration_value','arguments'=>['setting'=>'APISecret']]),$readonly)['result']['isError'],'configuration secret lookup blocked');
+check(!$result['result']['isError'],'read API succeeds');check($result['result']['structuredContent']['password']==='[REDACTED]','password redacted');check($result['result']['structuredContent']['nested']['api_key']==='[REDACTED]','nested credentials redacted');
+foreach([['limitnum'=>201],['limitnum'=>'2'],['action'=>'DeleteClient'],['unknown'=>1]] as $bad)check($server->handle($request('tools/call',['name'=>'whmcs_get_clients','arguments'=>$bad]),$readonly)['result']['isError'],'invalid input rejected');
+$limited=$readonly;$limited['tools']=['whmcs_get_invoices'];check($server->handle($request('tools/call',['name'=>'whmcs_get_clients','arguments'=>[]]),$limited)['result']['isError'],'tool allowlist');
+$calls=[];
+$preview=$server->handle($request('tools/call',['name'=>'whmcs_domain_renew','arguments'=>['domainid'=>1]]),$writer)['result']['structuredContent'];
+check($preview['dryRun']===true&&!$calls,'write defaults to preview');$id=$preview['approvalId'];
+$execute=['name'=>'whmcs_domain_renew','arguments'=>['domainid'=>1,'dry_run'=>false,'approval_id'=>$id]];
+check($server->handle($request('tools/call',$execute),$writer)['result']['isError'],'unapproved execution denied');
+Capsule::table('mod_htmcp_approvals')->where('id',$id)->update(['state'=>'approved']);
+check(!$server->handle($request('tools/call',$execute),$writer)['result']['isError'],'approved execution');check($calls===['DomainRenew'],'exact action dispatched once');
+check($server->handle($request('tools/call',$execute),$writer)['result']['isError'],'approval replay denied');check(count($calls)===1,'no second write');
+$p=Store::approval('prepare',$writer,'whmcs_domain_renew',['domainid'=>1],null);Capsule::table('mod_htmcp_approvals')->where('id',$p['approvalId'])->update(['state'=>'approved']);
+rejected(fn()=>Store::approval('consume',$writer,'whmcs_domain_renew',['domainid'=>2],$p['approvalId']),'approval arguments bound');
+$other=$writer;$other['id']=str_repeat('b',32);rejected(fn()=>Store::approval('consume',$other,'whmcs_domain_renew',['domainid'=>1],$p['approvalId']),'approval token bound');
+Capsule::table('mod_htmcp_approvals')->where('id',$p['approvalId'])->update(['expires'=>'2000-01-01 00:00:00']);rejected(fn()=>Store::approval('consume',$writer,'whmcs_domain_renew',['domainid'=>1],$p['approvalId']),'approval expired');
+check(Store::fingerprint('x',['b'=>2,'a'=>1])===Store::fingerprint('x',['a'=>1,'b'=>2]),'canonical fingerprint');
+$off=new Server($catalog,$api,fn()=>[],[Store::class,'approval'],false);check($off->handle($request('tools/call',$execute),$writer)['result']['isError'],'global write switch enforced');
+$plain='htmcp_'.str_repeat('a',64);$token=Store::authenticate($plain,2);Store::authenticate($plain,2);rejected(fn()=>Store::authenticate($plain,2),'rate limit with string database bucket');
+Capsule::table('mod_htmcp_tokens')->where('id',$token['id'])->update(['revoked'=>true]);rejected(fn()=>Store::authenticate($plain,60),'revocation');rejected(fn()=>Store::authenticate('bad',60),'bad bearer');
+$new=Store::createToken('fixture',['read'],[],1);$row=Capsule::table('mod_htmcp_tokens')->where('id',$new['id'])->first();check($row->hash!==$new['token']&&strlen($row->hash)===64,'token hashed at rest');
+Store::audit($new['id'],'tools/call','whmcs_get_clients','success');$audit=Capsule::$rows['mod_htmcp_audit'][0];check(!array_key_exists('arguments',$audit)&&!array_key_exists('token',$audit),'audit payload-free');
+$mrr=Reports::mrr([['domainstatus'=>'Active','billingcycle'=>'Monthly','amount'=>'10.00','currency'=>'EUR'],['domainstatus'=>'Active','billingcycle'=>'Annually','amount'=>'120.00','currency'=>'EUR'],['domainstatus'=>'Active','billingcycle'=>'Quarterly','amount'=>'30.00','currency'=>'GBP'],['domainstatus'=>'Cancelled','billingcycle'=>'Monthly','amount'=>'90.00','currency'=>'EUR'],['domainstatus'=>'Active','billingcycle'=>'One Time','amount'=>'99.00','currency'=>'EUR']]);
+check($mrr['byCurrency']['EUR']['estimated_mrr']==='20.00','annual MRR normalization');check($mrr['byCurrency']['GBP']['estimated_mrr']==='10.00','currency separation');check($mrr['excludedNonRecurringOrInactive']===2,'nonrecurring exclusions');
+check(Reports::money('-2.50')===-250&&Reports::decimal(-250)==='-2.50','exact minor amounts');rejected(fn()=>Reports::money('1.234'),'unsupported precision');
+foreach($catalog['tools'] as $tool){$args=[];foreach($tool['inputSchema']['required'] as $key){$schema=$tool['inputSchema']['properties'][$key];$type=$schema['type'];$args[$key]=$schema['enum'][0]??match($type){'integer'=>1,'number'=>1.0,'boolean'=>false,'array'=>[],default=>'fixture'};}$result=$server->handle($request('tools/call',['name'=>$tool['name'],'arguments'=>$args]),$writer);check(!($result['result']['isError']??true),'catalog dispatch '.$tool['action']);}
+echo 'PASS '.$checks.' checks; '.count($catalog['tools']).' API tools and '.count(Reports::tools())." BI tools. Synthetic only; WHMCS staging not claimed.\n";
