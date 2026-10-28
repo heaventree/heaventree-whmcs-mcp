@@ -56,7 +56,7 @@ final class Server
                         if ($dry) $data = ($this->approval)('prepare',$token,$name,$args,null);
                         else {
                             if (!$this->writes) throw new McpException('Writes disabled in module configuration.');
-                            if (!self::instant($name,$token)) ($this->approval)('consume',$token,$name,$args,$approval);
+                            if ($approval!==null || !self::instant($name,$token,$args)) ($this->approval)('consume',$token,$name,$args,$approval);
                             $data = ($this->api)($tool['action'],$args);
                         }
                     } elseif (isset($tool['report'])) $data = ($this->report)($tool['report'],$args);
@@ -88,8 +88,9 @@ final class Server
             return self::rpcError($id,-32602,$e->getMessage());
         } catch (\Throwable $e) { return self::rpcError($id,-32603,'Operation failed. Inspect server health; no automatic write retry is safe.'); }
     }
-    public static function instant(string $tool,array $token): bool
-    { return in_array('instant',$token['scopes']??[],true) && in_array('write',$token['scopes']??[],true) && in_array($tool,self::INSTANT_TOOLS,true); }
+    /** Blocking a sender with delete=true also deletes their tickets, so that form always needs an approval. */
+    public static function instant(string $tool,array $token,array $args=[]): bool
+    { return in_array('instant',$token['scopes']??[],true) && in_array('write',$token['scopes']??[],true) && in_array($tool,self::INSTANT_TOOLS,true) && empty($args['delete']); }
     private function allowed(array $tool,array $token): bool
     {
         $scopes=$token['scopes']??[]; $allowed=$token['tools']??[];

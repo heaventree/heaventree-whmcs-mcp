@@ -51,6 +51,10 @@ check($server->handle($request('tools/call',$reply),$writer)['result']['isError'
 check($server->handle($request('tools/call',['name'=>'whmcs_domain_renew','arguments'=>['domainid'=>1,'dry_run'=>false]]),$instant)['result']['isError'],'instant scope never covers non-ticket writes');
 check($server->handle($request('tools/call',['name'=>'whmcs_delete_ticket','arguments'=>['ticketid'=>9,'dry_run'=>false]]),$instant)['result']['isError'],'instant scope never covers ticket deletes');
 check($off->handle($request('tools/call',$reply),$instant)['result']['isError'],'global write switch applies to instant tokens');check(count($calls)===1,'no extra writes');
+check($server->handle($request('tools/call',['name'=>'whmcs_block_ticket_sender','arguments'=>['ticketid'=>9,'delete'=>true,'dry_run'=>false]]),$instant)['result']['isError'],'block sender with delete still needs approval');
+check(!$server->handle($request('tools/call',['name'=>'whmcs_block_ticket_sender','arguments'=>['ticketid'=>9,'dry_run'=>false]]),$instant)['result']['isError'],'block sender without delete is instant');
+$calls=[];$p2=Store::approval('prepare',$instant,'whmcs_add_ticket_note',['ticketid'=>9,'message'=>'x'],null);
+check($server->handle($request('tools/call',['name'=>'whmcs_add_ticket_note','arguments'=>['ticketid'=>9,'message'=>'x','dry_run'=>false,'approval_id'=>$p2['approvalId']]]),$instant)['result']['isError']&&!$calls,'a supplied approval is still checked on instant tokens');
 rejected(fn()=>Store::createToken('bad',['read','instant'],[],1),'instant requires write scope');
 $w=Store::createToken('hub',['read','write'],[],1);check(Store::setInstant($w['id'],true),'instant switched on');
 check(in_array('instant',json_decode(Capsule::table('mod_htmcp_tokens')->where('id',$w['id'])->first()->scopes,true),true),'instant stored');
