@@ -44,6 +44,18 @@ $other=$writer;$other['id']=str_repeat('b',32);rejected(fn()=>Store::approval('c
 Capsule::table('mod_htmcp_approvals')->where('id',$p['approvalId'])->update(['expires'=>'2000-01-01 00:00:00']);rejected(fn()=>Store::approval('consume',$writer,'whmcs_domain_renew',['domainid'=>1],$p['approvalId']),'approval expired');
 check(Store::fingerprint('x',['b'=>2,'a'=>1])===Store::fingerprint('x',['a'=>1,'b'=>2]),'canonical fingerprint');
 $off=new Server($catalog,$api,fn()=>[],[Store::class,'approval'],false);check($off->handle($request('tools/call',$execute),$writer)['result']['isError'],'global write switch enforced');
+$instant=$writer;$instant['scopes'][]='instant';$calls=[];
+$reply=['name'=>'whmcs_add_ticket_reply','arguments'=>['ticketid'=>9,'message'=>'Fixed','dry_run'=>false]];
+check(!$server->handle($request('tools/call',$reply),$instant)['result']['isError'],'instant token sends ticket reply without approval');check($calls===['AddTicketReply'],'instant reply dispatched once');
+check($server->handle($request('tools/call',$reply),$writer)['result']['isError'],'plain write token still needs approval for tickets');
+check($server->handle($request('tools/call',['name'=>'whmcs_domain_renew','arguments'=>['domainid'=>1,'dry_run'=>false]]),$instant)['result']['isError'],'instant scope never covers non-ticket writes');
+check($server->handle($request('tools/call',['name'=>'whmcs_delete_ticket','arguments'=>['ticketid'=>9,'dry_run'=>false]]),$instant)['result']['isError'],'instant scope never covers ticket deletes');
+check($off->handle($request('tools/call',$reply),$instant)['result']['isError'],'global write switch applies to instant tokens');check(count($calls)===1,'no extra writes');
+rejected(fn()=>Store::createToken('bad',['read','instant'],[],1),'instant requires write scope');
+$w=Store::createToken('hub',['read','write'],[],1);check(Store::setInstant($w['id'],true),'instant switched on');
+check(in_array('instant',json_decode(Capsule::table('mod_htmcp_tokens')->where('id',$w['id'])->first()->scopes,true),true),'instant stored');
+check(Store::setInstant($w['id'],false)&&!in_array('instant',json_decode(Capsule::table('mod_htmcp_tokens')->where('id',$w['id'])->first()->scopes,true),true),'instant switched off');
+$r=Store::createToken('reader',['read'],[],1);check(!Store::setInstant($r['id'],true),'read-only token cannot become instant');
 $plain='htmcp_'.str_repeat('a',64);$token=Store::authenticate($plain,2);Store::authenticate($plain,2);rejected(fn()=>Store::authenticate($plain,2),'rate limit with string database bucket');
 Capsule::table('mod_htmcp_tokens')->where('id',$token['id'])->update(['revoked'=>true]);rejected(fn()=>Store::authenticate($plain,60),'revocation');rejected(fn()=>Store::authenticate('bad',60),'bad bearer');
 $new=Store::createToken('fixture',['read'],[],1);$row=Capsule::table('mod_htmcp_tokens')->where('id',$new['id'])->first();check($row->hash!==$new['token']&&strlen($row->hash)===64,'token hashed at rest');

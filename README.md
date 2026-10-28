@@ -12,7 +12,7 @@ Original, MIT-licensed WHMCS addon exposing documented local API tools, operatio
 - [Maxer code review](docs/MAXER-REVIEW.md)
 - [Feature coverage](docs/PARITY.md)
 
-Default access is read-only. Write execution requires a write-scoped token, the addon write switch, and a five-minute administrator-approved request bound to the exact tool, parameters and token. Approvals are single-use; unknown execution outcomes require independent verification, not automatic retries.
+Default access is read-only. Write execution requires a write-scoped token, the addon write switch, and a five-minute administrator-approved request bound to the exact tool, parameters and token. Approvals are single-use; unknown execution outcomes require independent verification, not automatic retries. An administrator can mark one token for instant ticket writes (reply, note, update, block sender only), and can set a signed webhook that tells a mirror which ticket changed; see `docs/USAGE.md`.
 
 Business data remains on the WHMCS server until an authorized MCP client reads it. That client's model provider may receive returned data: self-hosting the addon does **not** guarantee data stays on-server when using a cloud AI client. Responses redact credential-like fields; token/audit tables do not store raw customer response bodies. Deployers must handle customer data lawfully and restrict access appropriately.
 

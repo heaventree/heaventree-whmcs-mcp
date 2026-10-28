@@ -13,10 +13,18 @@ final class Store
     }
     public static function createToken(string $label,array $scopes,array $tools,int $days): array
     {
-        if (!$label||strlen($label)>100||$days<1||$days>365||!$scopes||array_diff($scopes,['read','write'])) throw new McpException('Invalid token settings.');
+        if (!$label||strlen($label)>100||$days<1||$days>365||!$scopes||array_diff($scopes,['read','write','instant'])||(in_array('instant',$scopes,true)&&!in_array('write',$scopes,true))) throw new McpException('Invalid token settings.');
         $token='htmcp_'.bin2hex(random_bytes(32)); $id=bin2hex(random_bytes(16));
         Capsule::table('mod_htmcp_tokens')->insert(['id'=>$id,'label'=>$label,'hash'=>hash('sha256',$token),'scopes'=>json_encode(array_values($scopes),JSON_THROW_ON_ERROR),'tools'=>json_encode(array_values($tools),JSON_THROW_ON_ERROR),'expires'=>date('Y-m-d H:i:s',time()+$days*86400),'revoked'=>false,'bucket'=>0,'used'=>0]);
         return ['id'=>$id,'token'=>$token];
+    }
+    public static function setInstant(string $id,bool $on): bool
+    {
+        $row=Capsule::table('mod_htmcp_tokens')->where('id',$id)->first();
+        if (!$row) return false;
+        $scopes=array_values(array_diff(json_decode($row->scopes,true,512,JSON_THROW_ON_ERROR),['instant']));
+        if ($on) { if (!in_array('write',$scopes,true)) return false; $scopes[]='instant'; }
+        return Capsule::table('mod_htmcp_tokens')->where('id',$id)->update(['scopes'=>json_encode($scopes,JSON_THROW_ON_ERROR)])===1;
     }
     public static function authenticate(string $bearer,int $rpm): array
     {
